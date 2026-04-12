@@ -58,7 +58,6 @@ class MixtureOfGaussians(torch.nn.Module, ExportableModel):
         return [
             "features_albedo",
             "features_specular",
-            "person_feature",  # For ReID distillation
         ]
 
     def get_positions(self) -> torch.Tensor:
@@ -75,21 +74,6 @@ class MixtureOfGaussians(torch.nn.Module, ExportableModel):
 
     def get_features_specular(self) -> torch.Tensor:
         return self.features_specular
-
-    def get_person_feature(self) -> torch.Tensor:
-        """Get the learnable person feature embedding for ReID distillation.
-
-        Returns:
-            torch.Tensor: Person feature tensor [N_gaussians, D] where D is person_feature_dim
-        """
-        if not hasattr(self, "_person_feature") or self._person_feature is None:
-            # Return zeros if not initialized yet
-            return torch.zeros(
-                (self.num_gaussians, self.conf.model.get("person_feature_dim", 64)),
-                device=self.device,
-                dtype=torch.float32,
-            )
-        return self._person_feature
 
     def get_features(self):
         return torch.cat((self.features_albedo, self.features_specular), dim=1)
@@ -151,11 +135,6 @@ class MixtureOfGaussians(torch.nn.Module, ExportableModel):
             model_params["features_albedo"] = self.features_albedo
             model_params["features_specular"] = self.features_specular
 
-        # Add person_feature for ReID distillation
-        if hasattr(self, "_person_feature"):
-            model_params["person_feature"] = self._person_feature
-            model_params["person_feature_dim"] = self.conf.model.get("person_feature_dim", 64)
-
         return model_params
 
     def __init__(self, conf, scene_extent=None):
@@ -178,12 +157,6 @@ class MixtureOfGaussians(torch.nn.Module, ExportableModel):
             torch.empty([0, specular_dim])
         )  # Features of the higher order SH coefficients [n_gaussians, specular_dim]
         self.max_sh_degree = sh_degree
-
-        # Person feature for ReID distillation (learnable embedding per Gaussian)
-        person_feature_dim = conf.model.get("person_feature_dim", 64)
-        self._person_feature = torch.nn.Parameter(
-            torch.empty([0, person_feature_dim])
-        )  # [n_gaussians, person_feature_dim] - initialized when gaussians are added
 
         self.conf = conf
         self.scene_extent = scene_extent
@@ -576,16 +549,6 @@ class MixtureOfGaussians(torch.nn.Module, ExportableModel):
                 if module.requires_grad:
                     params.append({"params": [module], "name": name, **args})
 
-        # Add person_feature for ReID distillation if it exists and has gradients
-        if hasattr(self, "_person_feature") and self._person_feature.requires_grad and self._person_feature.shape[0] > 0:
-            person_feature_lr = self.conf.model.get("person_feature_lr", 1e-4)
-            params.append({
-                "params": [self._person_feature],
-                "name": "person_feature",
-                "lr": person_feature_lr
-            })
-            logger.info(f"🔆 Added person_feature to optimizer with lr={person_feature_lr}")
-
         if self.conf.optimizer.type == "adam":
             self.optimizer = torch.optim.Adam(params, lr=self.conf.optimizer.lr, eps=self.conf.optimizer.eps)
             logger.info("🔆 Using Adam optimizer")
@@ -638,9 +601,6 @@ class MixtureOfGaussians(torch.nn.Module, ExportableModel):
             self.scale.requires_grad = False
         if not self.conf.model.optimize_position:
             self.positions.requires_grad = False
-        if not self.conf.model.get("optimize_person_feature", True):
-            if hasattr(self, "_person_feature"):
-                self._person_feature.requires_grad = False
 
     def update_optimizable_parameters(self, optimizable_tensors: dict[str, torch.Tensor]):
         for name, value in optimizable_tensors.items():
@@ -835,9 +795,6 @@ class MixtureOfGaussians(torch.nn.Module, ExportableModel):
             self.density = torch.nn.Parameter(other.density.clone())
             self.features_albedo = torch.nn.Parameter(other.features_albedo.clone())
             self.features_specular = torch.nn.Parameter(other.features_specular.clone())
-            # Copy person_feature for ReID distillation
-            if hasattr(other, "_person_feature"):
-                self._person_feature = torch.nn.Parameter(other._person_feature.clone())
         else:  # shared tensors
             self.positions = torch.nn.Parameter(other.positions)
             self.rotation = torch.nn.Parameter(other.rotation)
@@ -845,9 +802,6 @@ class MixtureOfGaussians(torch.nn.Module, ExportableModel):
             self.density = torch.nn.Parameter(other.density)
             self.features_albedo = torch.nn.Parameter(other.features_albedo)
             self.features_specular = torch.nn.Parameter(other.features_specular)
-            # Share person_feature
-            if hasattr(other, "_person_feature"):
-                self._person_feature = torch.nn.Parameter(other._person_feature)
         self.max_sh_degree = other.max_sh_degree
         self.n_active_features = other.n_active_features
         self.scene_extent = other.scene_extent
@@ -871,9 +825,6 @@ class MixtureOfGaussians(torch.nn.Module, ExportableModel):
         sliced.density = torch.nn.Parameter(sliced.density[idx])
         sliced.features_albedo = torch.nn.Parameter(sliced.features_albedo[idx])
         sliced.features_specular = torch.nn.Parameter(sliced.features_specular[idx])
-        # Slice person_feature for ReID distillation
-        if hasattr(self, "_person_feature"):
-            sliced._person_feature = torch.nn.Parameter(sliced._person_feature[idx])
         return sliced
 
     def __len__(self):

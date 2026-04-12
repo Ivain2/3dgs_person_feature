@@ -33,11 +33,10 @@ from threedgrut.datasets.utils import DEFAULT_DEVICE, MultiEpochsDataLoader
 from threedgrut.export.ingp_exporter import INGPExporter
 from threedgrut.export.ply_exporter import PLYExporter
 from threedgrut.export.usdz_exporter import USDZExporter
-from threedgrut.model.losses import ssim, cosine_distillation_loss
+from threedgrut.model.losses import ssim
 from threedgrut.model.model import MixtureOfGaussians
 from threedgrut.optimizers import SelectiveAdam
 from threedgrut.render import Renderer
-from threedgrut.utils.roi_pooling import roi_pool
 from threedgrut.strategy.base import BaseStrategy
 from threedgrut.utils.gui import GUI
 from threedgrut.utils.logger import logger
@@ -459,18 +458,8 @@ class Trainer3DGRUT:
                 loss_scale = torch.abs(self.model.get_scale()).mean()
                 lambda_scale = self.conf.loss.lambda_scale
 
-        # ReID distillation loss
-        loss_reid = torch.zeros(1, device=self.device)
-        lambda_reid = 0.0
-        if self.conf.loss.get("use_reid", False):
-            with torch.cuda.nvtx.range(f"loss-reid"):
-                loss_reid = self._compute_reid_loss(gpu_batch, outputs)
-                lambda_reid = self.conf.loss.get("lambda_reid", 0.05)
-
         # Total loss
-        loss = (lambda_l1 * loss_l1 + lambda_ssim * loss_ssim + 
-                lambda_opacity * loss_opacity + lambda_scale * loss_scale +
-                lambda_reid * loss_reid)
+        loss = lambda_l1 * loss_l1 + lambda_ssim * loss_ssim + lambda_opacity * loss_opacity + lambda_scale * loss_scale
         return dict(
             total_loss=loss,
             l1_loss=lambda_l1 * loss_l1,
@@ -478,90 +467,7 @@ class Trainer3DGRUT:
             ssim_loss=lambda_ssim * loss_ssim,
             opacity_loss=lambda_opacity * loss_opacity,
             scale_loss=lambda_scale * loss_scale,
-            reid_loss=lambda_reid * loss_reid,
         )
-
-    def _compute_reid_loss(self, gpu_batch, outputs):
-        """Compute ReID distillation loss using rendered person_feature_map.
-
-        This method implements the Version A approach:
-        1. Get person_feature_map from outputs [D, H, W]
-        2. For each instance in the batch, apply ROI pooling to get f_v
-        3. Compare f_v with teacher_embedding using cosine distillation loss
-
-        Args:
-            gpu_batch: Batch containing instances with bbox, train_id, teacher_embedding
-            outputs: Model outputs containing person_feature_map
-
-        Returns:
-            Scalar loss tensor (0 if no valid instances)
-        """
-        # Check if person_feature_map is available
-        if "person_feature_map" not in outputs:
-            return torch.tensor(0.0, device=self.device)
-
-        person_feature_map = outputs["person_feature_map"]  # [D, H, W] or [B, D, H, W]
-
-        # Ensure person_feature_map has batch dimension
-        if person_feature_map.ndim == 3:
-            person_feature_map = person_feature_map.unsqueeze(0)  # [1, D, H, W]
-
-        # Get instances from gpu_batch
-        instances = getattr(gpu_batch, "instances", None)
-        if instances is None or len(instances) == 0:
-            return torch.tensor(0.0, device=self.device)
-
-        loss_sum = torch.tensor(0.0, device=self.device)
-        valid_count = 0
-
-        for instance in instances:
-            # Skip invalid instances (no teacher embedding)
-            if not instance.get("valid", False):
-                continue
-
-            # Get teacher embedding [D]
-            teacher_embedding = instance.get("teacher_embedding")
-            if teacher_embedding is None:
-                continue
-
-            # Convert to tensor if needed
-            if not isinstance(teacher_embedding, torch.Tensor):
-                teacher_embedding = torch.from_numpy(teacher_embedding).to(self.device)
-            else:
-                teacher_embedding = teacher_embedding.to(self.device)
-
-            # Get bbox [4] - [xmin, ymin, xmax, ymax]
-            bbox = instance.get("bbox_xyxy")
-            if bbox is None:
-                continue
-
-            if isinstance(bbox, (list, tuple)):
-                bbox = torch.tensor(bbox, device=self.device, dtype=torch.float32)
-            else:
-                bbox = bbox.to(self.device).float()
-
-            # Apply ROI pooling to get student embedding
-            try:
-                student_embedding = roi_pool(
-                    person_feature_map[0],  # [D, H, W]
-                    bbox.unsqueeze(0),     # [1, 4]
-                )  # [D]
-            except Exception:
-                continue
-
-            # Compute cosine distillation loss
-            loss_i = cosine_distillation_loss(
-                student_embedding.unsqueeze(0),  # [1, D]
-                teacher_embedding.unsqueeze(0),  # [1, D]
-            )
-
-            loss_sum = loss_sum + loss_i
-            valid_count += 1
-
-        if valid_count == 0:
-            return torch.tensor(0.0, device=self.device)
-
-        return loss_sum / valid_count
 
     @torch.cuda.nvtx.range("log_validation_iter")
     def log_validation_iter(
