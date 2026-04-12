@@ -1,0 +1,38 @@
+# @package _global_
+# WildTrack 3DGUT app config.
+# 仅保留与 base_gs / 代码实际使用的键，无效或错误键已移除（见文档说明）。
+
+defaults:
+  - /base_gs
+  - /dataset: wildtrack
+  - /initialization: random
+  - /render: 3dgut
+  - _self_
+
+# 数据根目录：与 colmap/nerf 一样用顶层 path，base 里 path: ???，此处或命令行传
+path: /data02/zhangrunxiang/data/Wildtrack_small_sample
+out_dir: ./runs
+val_frequency: 1000
+n_iterations: 30000
+
+# 背景：代码使用 model.background.color（字符串 "black" | "white" | "random"）
+model:
+  background:
+    color: black
+
+# 初始点数由 initialization.num_gaussians 控制，可在下方覆盖
+# WildTrack 场景范围很大（相机位置在几百米量级），需要调整初始化范围
+# Scene bounds: X[-649, 1195], Y[-337, 86], Z[600, 2041]
+initialization:
+  num_gaussians: 50000
+  xyz_min: -700.0
+  xyz_max: 2100.0
+
+# 数据集（path 已在上面；仅 dataset 特有参数）
+dataset:
+  downsample_factor: 4
+  test_split_interval: 5
+
+# 优化器：实际 per-param 学习率来自 base_gs 的 optimizer.params.*；此处 lr 为 Adam 默认
+optimizer:
+  lr: 0.001

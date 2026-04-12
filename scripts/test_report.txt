@@ -1,0 +1,45 @@
+=== 3dgut反向传播测试报告 ===
+
+测试时间: 2025-11-25T18:24:22.848836
+测试状态: success
+
+成功步骤:
+  ✓ configuration_created
+  ✓ plugin_loaded
+  ✓ tracer_created
+  ✓ test_data_created
+  ✓ forward_pass_completed
+  ✓ backward_pass_completed
+  ✓ tensor_splitting_completed
+  ✓ gradient_validation_completed
+
+错误信息:
+
+警告信息:
+  ⚠ 安全清理警告: CUDA error: an illegal memory access was encountered
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+
+张量形状信息:
+  mog_pos: torch.Size([100, 3])
+  mog_rot: torch.Size([100, 4])
+  mog_scl: torch.Size([100, 3])
+  mog_dns: torch.Size([100, 1])
+  mog_sph: torch.Size([100, 16])
+  ray_ori: torch.Size([1, 1, 1024, 3])
+  ray_dir: torch.Size([1, 1, 1024, 3])
+  sensor_params: <class 'lib3dgut_cc.CameraModelParameters'>
+  forward_result_0: torch.Size([1, 1024, 4])
+  forward_result_1: torch.Size([1, 1024, 1])
+  particle_density_grd: torch.Size([100, 12])
+  particle_radiance_grd: torch.Size([100, 16])
+  mog_pos_grd: torch.Size([100, 3])
+  mog_dns_grd: torch.Size([100, 1])
+  mog_rot_grd: torch.Size([100, 4])
+  mog_scl_grd: torch.Size([100, 3])
+
+内存使用信息:
+  cuda_allocated: 94720 bytes
+  cuda_reserved: 2097152 bytes
+  cuda_max_allocated: 104960 bytes
+  cuda_max_reserved: 2097152 bytes

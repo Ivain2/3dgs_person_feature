@@ -1,0 +1,62 @@
+{
+  "status": "BLOCKED",
+  "reason": "等待审批 CUDA 错误调试方案",
+  "issue": "CUDA illegal memory access error in projectBackward kernel",
+  "proposed_solution": {
+    "approach": "分步排除法",
+    "methods": [
+      {
+        "method_id": 1,
+        "name": "图像 Padding 到 1088",
+        "rationale": "CUDA kernel 使用 16×16 分块，要求图像尺寸为 16 的倍数。当前 1920×1080 中高度 1080 % 16 = 8，不满足要求。将高度 pad 到 1088（1088 % 16 = 0）可直接解决对齐问题。",
+        "expected_outcome": "最可能直接解决 CUDA 非法内存访问错误",
+        "implementation": "修改 dataset_wildtrack.py，在加载图像时自动 pad 到 1088×1920",
+        "risk_level": "低",
+        "estimated_time": "5 分钟修改 + 10 分钟运行验证"
+      },
+      {
+        "method_id": 2,
+        "name": "强制 FP32 / 关闭 AMP",
+        "rationale": "排除半精度（FP16）导致的 kernel 兼容性问题。AMP 可能在反向传播中使用 FP16，而 CUDA kernel 可能只支持 FP32。",
+        "expected_outcome": "如果方法1未解决，此方法可排除半精度问题",
+        "implementation": "检查配置文件中的 AMP 设置，强制使用 FP32",
+        "risk_level": "低",
+        "estimated_time": "5 分钟修改 + 10 分钟运行验证",
+        "dependency": "仅在方法1失败时执行"
+      }
+    ],
+    "execution_order": [
+      "方法1：图像 Padding 到 1088",
+      "验证方法1是否解决问题",
+      "如果方法1失败 → 方法2：强制 FP32 / 关闭 AMP",
+      "验证方法2是否解决问题"
+    ]
+  },
+  "technical_background": {
+    "cuda_requirements": {
+      "tile_size": "16×16",
+      "alignment_requirement": "图像宽度和高度必须是 16 的倍数",
+      "current_issue": "1080 % 16 = 8，不满足对齐要求",
+      "target_resolution": "1920×1088（1088 % 16 = 0）"
+    },
+    "amp_considerations": {
+      "issue": "AMP 可能在反向传播中使用 FP16",
+      "kernel_compatibility": "CUDA kernel 可能只支持 FP32",
+      "verification_needed": "确认 kernel 是否支持 FP16"
+    }
+  },
+  "files_to_modify": {
+    "method1": [
+      "/data02/zhangrunxiang/3dgrut/threedgrut/datasets/dataset_wildtrack.py"
+    ],
+    "method2": [
+      "/data02/zhangrunxiang/3dgrut/configs/apps/wildtrack_3dgut.yaml"
+    ]
+  },
+  "approval_required": true,
+  "next_steps": [
+    "审批通过后执行方法1",
+    "运行训练验证",
+    "根据结果决定是否执行方法2"
+  ]
+}

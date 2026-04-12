@@ -1,0 +1,37 @@
+# @package _global_
+
+defaults:
+  - /base_gs
+  - /dataset: wildtrack
+  - /initialization: random
+  - /render: 3dgrt
+  - _self_
+
+path: outputs/wildtrack_small_sample
+val_frequency: 10
+eval_frequency: 20
+max_iterations: 100
+
+# 模型参数配置
+model:
+  background_color: [0.0, 0.0, 0.0]  # 黑色背景
+  num_points: 100000  # 初始点云数量
+
+# 数据集路径配置
+dataset:
+  data_dir: /data02/zhangrunxiang/data/Wildtrack_small_sample
+  downsample_factor: 1
+  test_split_interval: 5
+  
+# 训练参数优化（针对多相机数据集）
+train:
+  batch_size: 1  # 多相机数据集建议使用较小的batch_size
+  
+# 渲染参数
+render:
+  num_rays: 4096  # 每批次渲染的光线数量
+  
+# 优化器参数
+optimizer:
+  lr: 0.001
+  lr_density: 0.01

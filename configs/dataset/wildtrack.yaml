@@ -1,0 +1,4 @@
+type: wildtrack
+# 数据根目录与 colmap/nerf 一样，使用顶层 path（base_gs 中 path: ???，运行时传 path=/path/to/Wildtrack_small_sample）
+downsample_factor: 4
+test_split_interval: 5

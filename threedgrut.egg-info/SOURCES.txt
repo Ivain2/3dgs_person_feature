@@ -1,0 +1,8 @@
+LICENSE
+README.md
+playground.py
+setup.py
+threedgrut.egg-info/PKG-INFO
+threedgrut.egg-info/SOURCES.txt
+threedgrut.egg-info/dependency_links.txt
+threedgrut.egg-info/top_level.txt

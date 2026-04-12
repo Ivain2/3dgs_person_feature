@@ -1,0 +1,10 @@
+Metadata-Version: 2.1
+Name: threedgrut
+Version: 0.0.1
+Summary: Official implementation of 3DGRT and 3DGUT research projects.
+Author: Nicolas Moenne-Loccoz, et al.
+Author-email: nicolasm@nvidia.com
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
