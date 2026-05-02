@@ -62,6 +62,8 @@ model:
   optimize_rotation: true
   optimize_scale: true
   bvh_update_frequency: 1
+  person_feature_dim: 64
+  person_feature_lr: 0.0001
   progressive_training:
     feature_type: "sh" # one of [sh, mlp], currently only sh supported
     init_n_features: 0 # sh: initial sh deg | mlp: num of dims initially unmasked
@@ -123,6 +125,9 @@ loss:
 
   use_scale: false
   lambda_scale: 0.0
+
+  use_reid: false
+  lambda_reid: 0.05
 
 hydra:
   output_subdir: null

@@ -29,3 +29,7 @@ dataset:
 
 optimizer:
   lr: 0.001
+
+loss:
+  use_reid: true
+  lambda_reid: 0.05

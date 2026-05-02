@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import torch
+import torch.nn.functional as F
 from fused_ssim import fused_ssim
 
 
@@ -29,5 +30,10 @@ def l2_loss(network_output, gt):
 
 @torch.cuda.nvtx.range("ssim")
 def ssim(img1, img2, window_size=11, size_average=True):
-    # predicted_image, gt_image: [BS, CH, H, W], predicted_image is differentiable
     return fused_ssim(img1, img2, padding="valid")
+
+
+@torch.cuda.nvtx.range("cosine_distillation_loss")
+def cosine_distillation_loss(student_embedding, teacher_embedding):
+    loss = 1.0 - F.cosine_similarity(student_embedding, teacher_embedding, dim=-1)
+    return loss.mean()

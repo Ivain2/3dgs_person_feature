@@ -20,6 +20,7 @@ from typing import Any, Optional, Union
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torch.utils.data
 from addict import Dict
 from omegaconf import DictConfig, OmegaConf
@@ -33,8 +34,9 @@ from threedgrut.datasets.utils import DEFAULT_DEVICE, MultiEpochsDataLoader
 from threedgrut.export.ingp_exporter import INGPExporter
 from threedgrut.export.ply_exporter import PLYExporter
 from threedgrut.export.usdz_exporter import USDZExporter
-from threedgrut.model.losses import ssim
+from threedgrut.model.losses import cosine_distillation_loss, ssim
 from threedgrut.model.model import MixtureOfGaussians
+from threedgrut.utils.roi_pooling import roi_pool
 from threedgrut.optimizers import SelectiveAdam
 from threedgrut.render import Renderer
 from threedgrut.strategy.base import BaseStrategy
@@ -394,6 +396,64 @@ class Trainer3DGRUT:
 
         return metrics
 
+    def _compute_reid_loss(self, gpu_batch, outputs):
+        instances = gpu_batch.instances
+        if not instances:
+            return torch.zeros(1, device=self.device), 0
+
+        person_feature_map = outputs.get("person_feature_map")
+        if person_feature_map is None:
+            return torch.zeros(1, device=self.device), 0
+
+        loss_list = []
+        num_valid = 0
+        for inst in instances:
+            if not inst.get("valid", False):
+                continue
+            teacher_emb = inst.get("teacher_embedding")
+            if teacher_emb is None:
+                continue
+
+            bbox = inst["bbox_xyxy"]
+            if isinstance(bbox, (list, tuple)):
+                bbox_t = torch.tensor(bbox, dtype=torch.float32, device=person_feature_map.device)
+            else:
+                bbox_t = bbox.to(person_feature_map.device).float()
+
+            D, H, W = person_feature_map.shape
+            xmin = int(torch.clamp(bbox_t[0], 0, W - 1).item())
+            ymin = int(torch.clamp(bbox_t[1], 0, H - 1).item())
+            xmax = int(torch.clamp(bbox_t[2], xmin + 1, W).item())
+            ymax = int(torch.clamp(bbox_t[3], ymin + 1, H).item())
+
+            if xmax <= xmin or ymax <= ymin:
+                continue
+
+            bbox_clamped = torch.tensor([xmin, ymin, xmax, ymax], dtype=torch.float32, device=person_feature_map.device)
+            f_v = roi_pool(person_feature_map, bbox_clamped)
+
+            t_v = torch.tensor(teacher_emb, dtype=torch.float32, device=f_v.device)
+            if t_v.dim() == 1:
+                t_v = t_v.unsqueeze(0)
+            if f_v.dim() == 1:
+                f_v = f_v.unsqueeze(0)
+
+            t_v = F.normalize(t_v, p=2, dim=-1)
+            t_v_norm = t_v.norm(p=2, dim=-1).mean()
+            assert 0.99 < t_v_norm < 1.01, (
+                f"[Teacher embedding normalize check failed] norm={t_v_norm.item():.4f}, "
+                f"expected ~1.0. Cache embeddings must be normalized before entering loss."
+            )
+
+            loss_i = cosine_distillation_loss(f_v, t_v)
+            loss_list.append(loss_i)
+            num_valid += 1
+
+        if len(loss_list) == 0:
+            return torch.zeros(1, device=self.device), 0
+
+        return torch.stack(loss_list).mean(), num_valid
+
     @torch.cuda.nvtx.range("get_losses")
     def get_losses(
         self, gpu_batch: dict[str, torch.Tensor], outputs: dict[str, torch.Tensor]
@@ -458,8 +518,17 @@ class Trainer3DGRUT:
                 loss_scale = torch.abs(self.model.get_scale()).mean()
                 lambda_scale = self.conf.loss.lambda_scale
 
+        # ReID distillation loss
+        loss_reid = torch.zeros(1, device=self.device)
+        lambda_reid = 0.0
+        num_valid_instances = 0
+        if self.conf.loss.get("use_reid", False) and gpu_batch.instances is not None:
+            with torch.cuda.nvtx.range(f"loss-reid"):
+                loss_reid, num_valid_instances = self._compute_reid_loss(gpu_batch, outputs)
+                lambda_reid = self.conf.loss.get("lambda_reid", 0.05)
+
         # Total loss
-        loss = lambda_l1 * loss_l1 + lambda_ssim * loss_ssim + lambda_opacity * loss_opacity + lambda_scale * loss_scale
+        loss = lambda_l1 * loss_l1 + lambda_ssim * loss_ssim + lambda_opacity * loss_opacity + lambda_scale * loss_scale + lambda_reid * loss_reid
         return dict(
             total_loss=loss,
             l1_loss=lambda_l1 * loss_l1,
@@ -467,6 +536,8 @@ class Trainer3DGRUT:
             ssim_loss=lambda_ssim * loss_ssim,
             opacity_loss=lambda_opacity * loss_opacity,
             scale_loss=lambda_scale * loss_scale,
+            reid_loss=lambda_reid * loss_reid,
+            num_valid_instances=num_valid_instances,
         )
 
     @torch.cuda.nvtx.range("log_validation_iter")
@@ -585,6 +656,15 @@ class Trainer3DGRUT:
             if self.conf.loss.use_scale:
                 scale_loss = np.mean(batch_metrics["losses"]["scale_loss"])
                 writer.add_scalar("loss/scale/train", scale_loss, global_step)
+            if self.conf.loss.get("use_reid", False):
+                reid_loss = np.mean(batch_metrics["losses"]["reid_loss"])
+                writer.add_scalar("loss/reid/train", reid_loss, global_step)
+                person_feature = self.model.get_person_feature()
+                if person_feature.grad is not None:
+                    grad_norm = person_feature.grad.norm(p=2, dim=list(range(1, person_feature.grad.dim()))).mean().item()
+                    writer.add_scalar("debug/person_feature_grad_norm/train", grad_norm, global_step)
+                num_valid = batch_metrics.get("num_valid_instances", 0)
+                writer.add_scalar("debug/num_valid_instances/train", num_valid, global_step)
             if "psnr" in batch_metrics:
                 writer.add_scalar("psnr/train", batch_metrics["psnr"], self.global_step)
             if "ssim" in batch_metrics:
@@ -747,7 +827,8 @@ class Trainer3DGRUT:
             # Compute the outputs of a single batch
             with torch.cuda.nvtx.range(f"train_{global_step}_fwd"):
                 profilers["inference"].start()
-                outputs = model(gpu_batch, train=True, frame_id=global_step)
+                render_feat = self.conf.loss.get("use_reid", False) and gpu_batch.instances is not None
+                outputs = model(gpu_batch, train=True, frame_id=global_step, render_person_feature=render_feat)
                 profilers["inference"].end()
 
             # Compute the losses of a single batch
