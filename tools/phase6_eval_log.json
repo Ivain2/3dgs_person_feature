@@ -1,0 +1,24 @@
+{
+  "num_instances": 596,
+  "num_unique_ids": 84,
+  "cos_teacher_mean": 0.0911027044057846,
+  "cos_teacher_std": 0.06734643876552582,
+  "same_id_cosine_mean": 0.4877083897590637,
+  "same_id_cosine_std": 0.49970126152038574,
+  "same_id_count": 3335,
+  "diff_id_cosine_mean": 0.43100911378860474,
+  "diff_id_cosine_std": 0.49507710337638855,
+  "diff_id_count": 173975,
+  "gap": 0.056699275970458984,
+  "top1_acc": 0.06711409395973154,
+  "top5_acc": 0.1912751677852349,
+  "random_top1": 0.011904761904761904,
+  "random_top5": 0.05952380952380952,
+  "checks": {
+    "cos_teacher_positive": true,
+    "same_gt_diff": true,
+    "top1_gt_random": true,
+    "top5_gt_random": true,
+    "no_nan": true
+  }
+}
