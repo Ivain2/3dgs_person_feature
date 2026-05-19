@@ -52,9 +52,10 @@ class _IdentityBackground(torch.nn.Module):
 
 
 class _FeatureRenderWrapper:
-    def __init__(self, model, feature_chunk):
+    def __init__(self, model, feature_chunk, valid_mask=None):
         self._model = model
         self._feature_chunk = feature_chunk
+        self._valid_mask = valid_mask
         self._identity_bg = _IdentityBackground()
 
     @property
@@ -72,7 +73,10 @@ class _FeatureRenderWrapper:
         return self._model.get_scale()
 
     def get_density(self):
-        return self._model.get_density()
+        density = self._model.get_density()
+        if self._valid_mask is not None:
+            density = density * self._valid_mask[:, None].to(dtype=density.dtype, device=density.device)
+        return density
 
     def get_features(self):
         specular_dim = self._model.features_specular.shape[1]
@@ -725,43 +729,57 @@ class MixtureOfGaussians(torch.nn.Module, ExportableModel):
         optimizable_tensors = self.replace_tensor_to_optimizer(updated_densities, "density")
         self.density = optimizable_tensors["density"]
 
-    def render_person_feature_map(self, batch: Batch, train=False, frame_id=0) -> torch.Tensor:
+    def render_person_feature_map(self, batch: Batch, train=False, frame_id=0, valid_mask=None,
+                                   linearize_feature: bool = False, linearize_mode: str = "sh_offset"):
         person_feature = self.get_person_feature()
         D = person_feature.shape[1]
         H, W = batch.rays_ori.shape[1], batch.rays_ori.shape[2]
 
         if person_feature.shape[0] == 0 or D == 0:
-            return torch.zeros(D, H, W, device=self.device)
+            return torch.zeros(D, H, W, device=self.device), torch.zeros(H, W, device=self.device)
 
         assert D == self.conf.model.get("person_feature_dim", 64), (
             f"[Feature map shape check failed] person_feature dim={D} != config person_feature_dim={self.conf.model.get('person_feature_dim', 64)}"
         )
 
         feature_chunks = []
+        opacity_map = None
         for i in range(0, D, 3):
             end = min(i + 3, D)
             chunk = person_feature[:, i:end]
             if chunk.shape[1] < 3:
                 chunk = torch.nn.functional.pad(chunk, (0, 3 - chunk.shape[1]))
 
-            wrapper = _FeatureRenderWrapper(self, chunk)
+            wrapper = _FeatureRenderWrapper(self, chunk, valid_mask=valid_mask)
             chunk_output = self.renderer.render(wrapper, batch, train, frame_id)
 
             actual_ch = min(3, D - i)
             feature_chunks.append(chunk_output["pred_rgb"][..., :actual_ch])
+
+            if opacity_map is None:
+                opacity_map = chunk_output["pred_opacity"].squeeze(0).squeeze(-1)  # [H, W]
 
         person_feature_map = torch.cat(feature_chunks, dim=-1)
         person_feature_map = person_feature_map.permute(0, 3, 1, 2).squeeze(0)
         assert person_feature_map.shape == (D, H, W), (
             f"[Feature map shape check failed] expected ({D}, {H}, {W}), got {person_feature_map.shape}"
         )
-        return person_feature_map
 
-    def forward(self, batch: Batch, train=False, frame_id=0, render_person_feature=False) -> dict[str, torch.Tensor]:
+        if linearize_feature and linearize_mode == "sh_offset":
+            SH_C0 = 0.28209479177387814
+            person_feature_map = (person_feature_map - 0.5 * opacity_map.unsqueeze(0)) / SH_C0
+
+        return person_feature_map, opacity_map
+
+    def forward(self, batch: Batch, train=False, frame_id=0, render_person_feature=False,
+                linearize_feature: bool = False, linearize_mode: str = "sh_offset") -> dict[str, torch.Tensor]:
         outputs = self.renderer.render(self, batch, train, frame_id)
 
         if render_person_feature:
-            outputs["person_feature_map"] = self.render_person_feature_map(batch, train, frame_id)
+            feature_map, opacity_map = self.render_person_feature_map(
+                batch, train, frame_id, linearize_feature=linearize_feature, linearize_mode=linearize_mode)
+            outputs["person_feature_map"] = feature_map
+            outputs["person_opacity_map"] = opacity_map
 
         return outputs
 

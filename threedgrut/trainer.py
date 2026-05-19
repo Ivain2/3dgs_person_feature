@@ -36,7 +36,7 @@ from threedgrut.export.ply_exporter import PLYExporter
 from threedgrut.export.usdz_exporter import USDZExporter
 from threedgrut.model.losses import cosine_distillation_loss, ssim
 from threedgrut.model.model import MixtureOfGaussians
-from threedgrut.utils.roi_pooling import roi_pool
+from threedgrut.utils.roi_pooling import roi_pool, scale_bbox_to_render
 from threedgrut.optimizers import SelectiveAdam
 from threedgrut.render import Renderer
 from threedgrut.strategy.base import BaseStrategy
@@ -355,7 +355,7 @@ class Trainer3DGRUT:
         lpips = self.criterions["lpips"]
 
         # Move losses to cpu once
-        metrics["losses"] = {k: v.detach().item() for k, v in losses.items()}
+        metrics["losses"] = {k: v.detach().item() if isinstance(v, torch.Tensor) else v for k, v in losses.items()}
 
         is_compute_train_hit_metrics = (split == "training") and (step % self.conf.writer.hit_stat_frequency == 0)
         is_compute_validation_metrics = split == "validation"
@@ -405,6 +405,8 @@ class Trainer3DGRUT:
         if person_feature_map is None:
             return torch.zeros(1, device=self.device), 0
 
+        D, H, W = person_feature_map.shape
+
         loss_list = []
         num_valid = 0
         for inst in instances:
@@ -414,23 +416,37 @@ class Trainer3DGRUT:
             if teacher_emb is None:
                 continue
 
-            bbox = inst["bbox_xyxy"]
-            if isinstance(bbox, (list, tuple)):
-                bbox_t = torch.tensor(bbox, dtype=torch.float32, device=person_feature_map.device)
-            else:
-                bbox_t = bbox.to(person_feature_map.device).float()
+            bbox_original = inst.get("bbox_xyxy_original")
+            orig_w = inst.get("img_width_original", 1920)
+            orig_h = inst.get("img_height_original", 1088)
 
-            D, H, W = person_feature_map.shape
-            xmin = int(torch.clamp(bbox_t[0], 0, W - 1).item())
-            ymin = int(torch.clamp(bbox_t[1], 0, H - 1).item())
-            xmax = int(torch.clamp(bbox_t[2], xmin + 1, W).item())
-            ymax = int(torch.clamp(bbox_t[3], ymin + 1, H).item())
+            if bbox_original is not None:
+                bbox_render = scale_bbox_to_render(
+                    bbox_original,
+                    src_w=orig_w,
+                    src_h=orig_h,
+                    dst_w=W,
+                    dst_h=H,
+                )
+            else:
+                bbox = inst["bbox_xyxy"]
+                if isinstance(bbox, (list, tuple)):
+                    bbox_render = torch.tensor(bbox, dtype=torch.float32, device=person_feature_map.device)
+                else:
+                    bbox_render = bbox.to(person_feature_map.device).float()
+
+            xmin = int(torch.clamp(bbox_render[0], 0, W - 1).item())
+            ymin = int(torch.clamp(bbox_render[1], 0, H - 1).item())
+            xmax = int(torch.clamp(bbox_render[2], xmin + 1, W).item())
+            ymax = int(torch.clamp(bbox_render[3], ymin + 1, H).item())
 
             if xmax <= xmin or ymax <= ymin:
                 continue
 
             bbox_clamped = torch.tensor([xmin, ymin, xmax, ymax], dtype=torch.float32, device=person_feature_map.device)
-            f_v = roi_pool(person_feature_map, bbox_clamped)
+            f_v, _ = roi_pool(person_feature_map, bbox_clamped)
+            if f_v is None:
+                continue
 
             t_v = torch.tensor(teacher_emb, dtype=torch.float32, device=f_v.device)
             if t_v.dim() == 1:

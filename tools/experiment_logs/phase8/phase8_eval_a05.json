@@ -1,0 +1,46 @@
+{
+  "num_instances": 653,
+  "num_unique_ids": 88,
+  "num_cameras": 7,
+  "camera_list": [
+    "C1",
+    "C2",
+    "C3",
+    "C4",
+    "C5",
+    "C6",
+    "C7"
+  ],
+  "split": "train",
+  "mean_cos_fv_tv": 0.199199378490448,
+  "skipped_instances": 0,
+  "nan_inf_count": 0,
+  "teacher": {
+    "same_cos": 0.9599732160568237,
+    "diff_cos": 0.929640531539917,
+    "gap": 0.03033268451690674,
+    "top1": 0.642967542503864,
+    "top5": 0.8500772797527048,
+    "mAP": 0.46296311159450043,
+    "skipped_queries": 6
+  },
+  "student": {
+    "same_cos": 0.9996135830879211,
+    "diff_cos": 0.9995966553688049,
+    "gap": 1.6927719116210938e-05,
+    "top1": 0.0633693972179289,
+    "top5": 0.17465224111282843,
+    "mAP": 0.033917985114821386,
+    "skipped_queries": 6
+  },
+  "random": {
+    "top1": 0.011363636363636364,
+    "top5": 0.056818181818181816
+  },
+  "ratios": {
+    "top1_student_teacher": 0.0985576923076923,
+    "top5_student_teacher": 0.20545454545454545,
+    "gap_student_teacher": 0.0005580686109986677
+  },
+  "judgment": "BELOW"
+}

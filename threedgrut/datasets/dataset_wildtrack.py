@@ -504,10 +504,13 @@ class WildtrackDataset(Dataset):
             
             instance = {
                 'bbox_xyxy': bbox_xyxy,
+                'bbox_xyxy_original': bbox_xyxy_original,
                 'raw_id': raw_id,
                 'train_id': train_id,
                 'teacher_embedding': teacher_embedding,
-                'valid': teacher_embedding is not None
+                'valid': teacher_embedding is not None,
+                'img_width_original': self.img_width * self.downsample_factor,
+                'img_height_original': self.img_height * self.downsample_factor,
             }
             
             instances.append(instance)
