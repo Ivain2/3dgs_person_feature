@@ -65,7 +65,7 @@ struct ShRadiativeGaussianVolumetricFeaturesParticles : Params, public ExtParams
     __forceinline__ __device__ DensityParameters fetchDensityParameters(uint32_t particleIdx) const {
         const auto parameters = particleDensityParameters(
             particleIdx,
-            {reinterpret_cast<gaussianParticle_RawParameters_0*>(m_densityRawParameters.ptr), nullptr});
+            {{reinterpret_cast<gaussianParticle_RawParameters_0*>(m_densityRawParameters.ptr), nullptr, false}});
         return *reinterpret_cast<const DensityParameters*>(&parameters);
     }
 

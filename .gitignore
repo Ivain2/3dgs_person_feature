@@ -16,9 +16,30 @@ pretrained/
 weights/
 *.pth
 *.pt
+*.so
 
 .venv/
 env/
 
 .ipynb_checkpoints/
 .DS_Store
+
+# 实验产物
+experiments/
+_legacy/
+_archive/
+tools/_archive/
+
+# wandb
+wandb/
+
+# 临时
+*.tmp
+*.bak
+
+# IDE
+.vscode/
+.idea/
+
+# Hydra dump
+**/.hydra/

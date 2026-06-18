@@ -62,18 +62,24 @@ def make(name: str, config, ray_jitter):
                 test_split_interval=config.dataset.test_split_interval,
             )
         case "wildtrack":
+            single_frame_id = getattr(config.dataset, 'single_frame_id', None)
+            held_out_camera = getattr(config.dataset, 'held_out_camera', None)
             train_dataset = WildtrackDataset(
                 config.path,
                 split="train",
                 downsample_factor=config.dataset.downsample_factor,
                 test_split_interval=config.dataset.test_split_interval,
                 ray_jitter=ray_jitter,
+                single_frame_id=single_frame_id,
+                held_out_camera=held_out_camera,
             )
             val_dataset = WildtrackDataset(
                 config.path,
                 split="val",
                 downsample_factor=config.dataset.downsample_factor,
                 test_split_interval=config.dataset.test_split_interval,
+                single_frame_id=single_frame_id,
+                held_out_camera=held_out_camera,
             )
         case _:
             raise ValueError(
@@ -106,11 +112,17 @@ def make_test(name: str, config):
                 test_split_interval=config.dataset.test_split_interval,
             )
         case "wildtrack":
+            # WildTrack has no separate test split; use val split for rendering/evaluation.
+            # In LOO mode, val split contains only the held-out camera.
+            single_frame_id = getattr(config.dataset, 'single_frame_id', None)
+            held_out_camera = getattr(config.dataset, 'held_out_camera', None)
             dataset = WildtrackDataset(
                 config.path,
-                split="val",
+                split="val",  # WildTrack has no test split; val is used for evaluation
                 downsample_factor=config.dataset.downsample_factor,
                 test_split_interval=config.dataset.test_split_interval,
+                single_frame_id=single_frame_id,
+                held_out_camera=held_out_camera,
             )
         case _:
             raise ValueError(

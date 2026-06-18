@@ -35,6 +35,8 @@ class WildtrackDataset(Dataset):
         test_split_interval: int = 8,
         ray_jitter: Optional[float] = None,
         load_teacher_cache: bool = True,
+        single_frame_id: Optional[int] = None,
+        held_out_camera: Optional[str] = None,
     ) -> None:
         super().__init__()
         
@@ -43,6 +45,8 @@ class WildtrackDataset(Dataset):
         self.downsample_factor = downsample_factor
         self.test_split_interval = test_split_interval
         self.ray_jitter = ray_jitter
+        self.single_frame_id = single_frame_id
+        self.held_out_camera = held_out_camera
         
         self.camera_ids = [f"C{i}" for i in range(1, 8)]
         
@@ -178,10 +182,12 @@ class WildtrackDataset(Dataset):
                 T = fs.getNode("T").mat().flatten()
                 fs.release()
                 
-                # Use original extrinsics directly
-                C2W = np.eye(4, dtype=np.float32)
-                C2W[:3, :3] = R
-                C2W[:3, 3] = T
+                # WildTrack XML stores W2C (R,T where p_cam = R @ p_world + T)
+                # Must invert to get C2W for the tracer
+                W2C = np.eye(4, dtype=np.float32)
+                W2C[:3, :3] = R
+                W2C[:3, 3] = T
+                C2W = np.linalg.inv(W2C).astype(np.float32)
                 extrinsics[cam_id] = C2W
             else:
                 extrinsics[cam_id] = np.eye(4, dtype=np.float32)
@@ -194,7 +200,7 @@ class WildtrackDataset(Dataset):
             resolution=np.array([self.img_width, self.img_height], dtype=np.int64),
             shutter_type=ShutterType.GLOBAL,
             principal_point=np.array([self.img_width/2, self.img_height/2], dtype=np.float32),
-            focal_length=np.array([1000, 1000], dtype=np.float32) // self.downsample_factor,
+            focal_length=np.array([1000.0, 1000.0], dtype=np.float32) / self.downsample_factor,
             radial_coeffs=np.zeros(6, dtype=np.float32),
             tangential_coeffs=np.zeros(2, dtype=np.float32),
             thin_prism_coeffs=np.zeros(4, dtype=np.float32)
@@ -251,14 +257,50 @@ class WildtrackDataset(Dataset):
     def _get_split_indices(self) -> List[Tuple[str, int]]:
         indices = []
         num_frames = len(self.image_paths[self.camera_ids[0]])
-        
-        # Only use frames that have annotations AND exist in image_paths
-        available_frames = sorted([f for f in self.annotations.keys() if f < num_frames])
-        
+
+        # Wildtrack image filenames are 0, 5, 10, ..., 2000 (step=5).
+        # After sorting, image_paths[i] corresponds to frame_id = i * 5.
+        # So annotation frame_id maps to image index = frame_id // 5.
+        # Only use frames whose image index is valid.
+        available_frames = sorted([
+            f for f in self.annotations.keys()
+            if f % 5 == 0 and f // 5 < num_frames
+        ])
+
         if not available_frames:
             print(f"[WARNING] No annotations found. Using all frames.")
-            available_frames = list(range(num_frames))
-        
+            available_frames = [i * 5 for i in range(num_frames)]
+
+        if self.single_frame_id is not None:
+            available_frames = [f for f in available_frames if f == self.single_frame_id]
+            if not available_frames:
+                print(f"[WARNING] single_frame_id={self.single_frame_id} not in annotations, using as-is")
+                available_frames = [self.single_frame_id]
+            
+            # Leave-One-Out模式：训练用6个视角，验证用1个held-out视角
+            if self.held_out_camera is not None:
+                assert self.held_out_camera in self.camera_ids, \
+                    f"held_out_camera={self.held_out_camera} not in camera_ids={self.camera_ids}"
+                
+                if self.split == "train":
+                    # 训练集：排除held-out camera
+                    train_cams = [c for c in self.camera_ids if c != self.held_out_camera]
+                    for frame_idx in available_frames:
+                        for cam_id in train_cams:
+                            indices.append((cam_id, frame_idx))
+                    print(f"[LOO] Train split: {len(train_cams)} cameras (excluding {self.held_out_camera})")
+                elif self.split == "val":
+                    # 验证集：只包含held-out camera
+                    for frame_idx in available_frames:
+                        indices.append((self.held_out_camera, frame_idx))
+                    print(f"[LOO] Val split: 1 camera ({self.held_out_camera})")
+            else:
+                # 原始逻辑：所有视角都用于训练和验证
+                for frame_idx in available_frames:
+                    for cam_id in self.camera_ids:
+                        indices.append((cam_id, frame_idx))
+            return indices
+
         for frame_idx in available_frames:
             # For training: use all available annotated frames
             # For validation: use every N-th annotated frame
@@ -269,7 +311,7 @@ class WildtrackDataset(Dataset):
                 # Validate less frequently since we have fewer annotated frames
                 for cam_id in self.camera_ids:
                     indices.append((cam_id, frame_idx))
-        
+
         return indices
     
     def compute_spatial_extents(self) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -319,9 +361,12 @@ class WildtrackDataset(Dataset):
     
     def __getitem__(self, index: int) -> dict:
         cam_id, frame_idx = self.indices[index]
-        
-        # Load image
-        image_path = self.image_paths[cam_id][frame_idx]
+
+        # Load image: frame_idx is the annotation frame_id (0, 5, 10, ..., 1995).
+        # image_paths is sorted by filename, so image index = frame_id // 5.
+        assert frame_idx % 5 == 0, f"frame_idx {frame_idx} must be multiple of 5"
+        image_index = frame_idx // 5
+        image_path = self.image_paths[cam_id][image_index]
         image = cv2.imread(image_path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
@@ -347,8 +392,8 @@ class WildtrackDataset(Dataset):
         
         image = image.astype(np.float32) / 255.0
         
-        # Generate rays using actual image dimensions
         C2W = self.extrinsics[cam_id].copy()
+        
         intrinsics = self.intrinsics[cam_id]
         
         h, w = image.shape[:2]
@@ -356,29 +401,20 @@ class WildtrackDataset(Dataset):
         
         fx, fy = intrinsics.focal_length
         cx, cy = intrinsics.principal_point
-        k1, k2, k3, k4, k5, k6 = intrinsics.radial_coeffs
-        p1, p2 = intrinsics.tangential_coeffs
         
-        # Back-project to normalized plane
+        # Pinhole ray generation (no distortion applied to rays)
+        # 3DGUT's projectPoint() applies forward distortion internally when
+        # projecting 3D Gaussian centers to pixels. Rays must be the inverse
+        # of that: from distorted pixel (i,j) back to undistorted camera-space
+        # direction, which is simply the pinhole back-projection.
+        # Applying forward distortion here would double-distort.
         x = (i - cx) / fx
         y = (j - cy) / fy
-        r2 = x*x + y*y
         
-        # Distortion correction
-        radial_dist = 1 + k1*r2 + k2*r2*r2 + k3*r2*r2*r2
-        tan_dist_x = 2*p1*x*y + p2*(r2 + 2*x*x)
-        tan_dist_y = p1*(r2 + 2*y*y) + 2*p2*x*y
-        
-        x_dist = x * radial_dist + tan_dist_x
-        y_dist = y * radial_dist + tan_dist_y
-        
-        # Generate ray directions (camera coordinate system)
-        rays_dir = np.stack([x_dist, y_dist, np.ones_like(x_dist)], axis=-1)
+        rays_dir = np.stack([x, y, np.ones_like(x)], axis=-1)
         rays_dir = rays_dir / np.linalg.norm(rays_dir, axis=-1, keepdims=True)
         
-        # Transform to world coordinate system
-        rays_dir = rays_dir @ C2W[:3, :3].T
-        rays_ori = np.broadcast_to(C2W[:3, 3], rays_dir.shape)
+        rays_ori = np.zeros_like(rays_dir)
         
         if self.ray_jitter is not None and self.split == "train":
             rays_dir += np.random.normal(0, self.ray_jitter, rays_dir.shape)
@@ -472,20 +508,19 @@ class WildtrackDataset(Dataset):
             if xmin == -1 or xmax <= xmin or ymax <= ymin:
                 continue
             
-            # Store original bbox for cache key lookup (before downsample)
-            bbox_xyxy_original = [xmin, ymin, xmax, ymax]
+            # Store original-resolution bbox for cache key lookup
+            bbox_xyxy_original = [xmin, ymin, xmax, ymax]  # original resolution
             
+            # Downsampled bbox for ROI pooling
             if self.downsample_factor > 1:
-                xmin = int(xmin / self.downsample_factor)
-                ymin = int(ymin / self.downsample_factor)
-                xmax = int(xmax / self.downsample_factor)
-                ymax = int(ymax / self.downsample_factor)
-            
-            bbox_xyxy = bbox_xyxy_original if self.downsample_factor == 1 else [xmin, ymin, xmax, ymax]
-            
-            # For ROI pooling: use downsample-adjusted bbox
-            # For cache lookup: use original bbox
-            bbox_xyxy_for_roi = [xmin, ymin, xmax, ymax]  # This is already downsampled
+                bbox_xyxy_ds = [
+                    int(xmin / self.downsample_factor),
+                    int(ymin / self.downsample_factor),
+                    int(xmax / self.downsample_factor),
+                    int(ymax / self.downsample_factor),
+                ]
+            else:
+                bbox_xyxy_ds = bbox_xyxy_original
             
             teacher_embedding = None
             if self.teacher_cache is not None:
@@ -503,7 +538,7 @@ class WildtrackDataset(Dataset):
                     teacher_embedding = cache_entry.get('embedding')
             
             instance = {
-                'bbox_xyxy': bbox_xyxy,
+                'bbox_xyxy': bbox_xyxy_ds,
                 'bbox_xyxy_original': bbox_xyxy_original,
                 'raw_id': raw_id,
                 'train_id': train_id,
@@ -544,10 +579,13 @@ class WildtrackDataset(Dataset):
             if tensor.ndim == 3:  # [H, W, C] → [1, H, W, C]
                 tensor = tensor.unsqueeze(0)
             elif tensor.ndim == 4:  # Already [B, H, W, C] or [B, C, H, W]
-                # Check if it's CHW format (channel count is usually 3 or 4)
+                # Detect CHW format: if dim1 is small (3 or 4) and dim2 is large,
+                # it's likely [B, C, H, W] which is NOT supported — raise error
                 if tensor.shape[1] in [3, 4] and tensor.shape[1] < tensor.shape[2]:
-                    # [B, C, H, W] → [B, H, W, C]
-                    tensor = tensor.permute(0, 2, 3, 1)
+                    raise ValueError(
+                        f"{name} appears to be in [B, C, H, W] format (shape={tensor.shape}). "
+                        f"Expected [B, H, W, C]. Please convert before passing to this function."
+                    )
             else:
                 raise ValueError(f"{name} has unexpected shape: {tensor.shape}")
             

@@ -23,8 +23,8 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.tensorboard.writer import SummaryWriter
 
-OmegaConf.register_new_resolver("div", lambda a, b: a / b)
-OmegaConf.register_new_resolver("eq", lambda a, b: a == b)
+OmegaConf.register_new_resolver("div", lambda a, b: a / b, replace=True)
+OmegaConf.register_new_resolver("eq", lambda a, b: a == b, replace=True)
 
 
 def to_torch(data: npt.NDArray, device: str, dtype: Optional[torch.dtype] = None) -> torch.Tensor:

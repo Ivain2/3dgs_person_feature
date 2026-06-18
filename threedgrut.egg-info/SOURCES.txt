@@ -1,5 +1,4 @@
 LICENSE
-README.md
 playground.py
 setup.py
 threedgrut.egg-info/PKG-INFO
