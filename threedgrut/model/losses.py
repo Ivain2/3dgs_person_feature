@@ -33,7 +33,3 @@ def ssim(img1, img2, window_size=11, size_average=True):
     return fused_ssim(img1, img2, padding="valid")
 
 
-@torch.cuda.nvtx.range("cosine_distillation_loss")
-def cosine_distillation_loss(student_embedding, teacher_embedding):
-    loss = 1.0 - F.cosine_similarity(student_embedding, teacher_embedding, dim=-1)
-    return loss.mean()

@@ -15,8 +15,6 @@ from torch.utils.data import Dataset
 
 from .camera_models import OpenCVPinholeCameraModelParameters, ShutterType
 from .protocols import Batch
-from .reid_teacher_cache import ReidTeacherCache
-from .cache_key import make_cache_key
 
 
 class WildtrackDataset(Dataset):
@@ -34,7 +32,6 @@ class WildtrackDataset(Dataset):
         downsample_factor: int = 1,
         test_split_interval: int = 8,
         ray_jitter: Optional[float] = None,
-        load_teacher_cache: bool = True,
         single_frame_id: Optional[int] = None,
         held_out_camera: Optional[str] = None,
     ) -> None:
@@ -65,11 +62,6 @@ class WildtrackDataset(Dataset):
         # Load ID mapping and annotations (using annotations_remapped)
         self.id_map = self._load_id_map()
         self.annotations = self._load_annotations()
-        
-        # Load teacher feature cache (optional, for ReID distillation)
-        self.teacher_cache = None
-        if load_teacher_cache:
-            self.teacher_cache = ReidTeacherCache(dataset_path)
         
         self.indices = self._get_split_indices()
         self._scene_bbox = self.compute_spatial_extents()
@@ -434,7 +426,7 @@ class WildtrackDataset(Dataset):
             "shutter_type": intrinsics.shutter_type.value
         }
         
-        # Build instances list for ReID distillation
+        # Build instances list (bbox + identity only)
         instances = self._get_instances_for_frame(frame_idx, cam_id, intrinsics)
         
         return {
@@ -446,7 +438,7 @@ class WildtrackDataset(Dataset):
             "image_path": image_path,
             "camera_id": cam_id,
             "frame_idx": frame_idx,
-            "instances": instances    # List of instance dicts with bbox, train_id, teacher_embedding
+            "instances": instances    # List of instance dicts with bbox + identity
         }
     
     def _get_instances_for_frame(self, frame_idx: int, cam_id: str, intrinsics) -> List[Dict]:
@@ -473,7 +465,8 @@ class WildtrackDataset(Dataset):
         So camera_id in annotations_remapped maps to cam_id as: cam_id = f"C{camera_id + 1}"
         
         Returns:
-            List of dicts with bbox_xyxy, raw_id, train_id, teacher_embedding, valid
+            List of dicts with bbox_xyxy, bbox_xyxy_original, raw_id, train_id,
+            img_width_original, img_height_original (geometry/identity only).
         """
         instances = []
         
@@ -482,7 +475,7 @@ class WildtrackDataset(Dataset):
         
         frame_annots = self.annotations[frame_idx]
         
-        for inst_idx, person in enumerate(frame_annots):
+        for person in frame_annots:
             raw_id = person.get('raw_id', 0)
             train_id = person.get('new_id') or person.get('train_id')
             
@@ -508,10 +501,10 @@ class WildtrackDataset(Dataset):
             if xmin == -1 or xmax <= xmin or ymax <= ymin:
                 continue
             
-            # Store original-resolution bbox for cache key lookup
-            bbox_xyxy_original = [xmin, ymin, xmax, ymax]  # original resolution
+            # Original-resolution bbox
+            bbox_xyxy_original = [xmin, ymin, xmax, ymax]
             
-            # Downsampled bbox for ROI pooling
+            # Downsampled bbox for ROI/visibility use
             if self.downsample_factor > 1:
                 bbox_xyxy_ds = [
                     int(xmin / self.downsample_factor),
@@ -522,28 +515,11 @@ class WildtrackDataset(Dataset):
             else:
                 bbox_xyxy_ds = bbox_xyxy_original
             
-            teacher_embedding = None
-            if self.teacher_cache is not None:
-                # Use original bbox for cache key (cache was built on full-res images)
-                cache_key = make_cache_key(frame_idx, cam_id, train_id, bbox_xyxy_original)
-                cache_entry = self.teacher_cache.get(cache_key)
-                if cache_entry is not None:
-                    cache_train_id = cache_entry.get('train_id')
-
-                    assert cache_train_id == train_id, (
-                        f"[Cache align fail] frame={frame_idx}, cam={cam_id}: "
-                        f"cache.train_id={cache_train_id} != ann.train_id={train_id}"
-                    )
-
-                    teacher_embedding = cache_entry.get('embedding')
-            
             instance = {
                 'bbox_xyxy': bbox_xyxy_ds,
                 'bbox_xyxy_original': bbox_xyxy_original,
                 'raw_id': raw_id,
                 'train_id': train_id,
-                'teacher_embedding': teacher_embedding,
-                'valid': teacher_embedding is not None,
                 'img_width_original': self.img_width * self.downsample_factor,
                 'img_height_original': self.img_height * self.downsample_factor,
             }
@@ -651,7 +627,7 @@ class WildtrackDataset(Dataset):
             intrinsics=intrinsics,
             intrinsics_OpenCVPinholeCameraModelParameters=intrinsics_params,
             intrinsics_OpenCVFisheyeCameraModelParameters=None,
-            instances=batch.get("instances")  # Pass instances to Batch for ReID distillation
+            instances=batch.get("instances")  # bbox + identity info for geometry/visibility use
         )
     
     def __len__(self) -> int:
